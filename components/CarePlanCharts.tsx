@@ -1,5 +1,6 @@
 'use client'
 
+import { Card } from './ui/card';
 import {
   LineChart,
   Line,
@@ -9,153 +10,193 @@ import {
   Tooltip,
   Legend,
   ResponsiveContainer,
-  ReferenceLine,
-} from 'recharts'
-
-interface FHIRGoal {
-  resourceType: 'Goal'
-  id: string
-  lifecycleStatus: string
-  description: {
-    text: string
-  }
-  target: Array<{
-    measure: {
-      text: string
-    }
-    detailQuantity: {
-      value: number
-      unit: string
-    }
-  }>
-}
-
-interface FHIRObservation {
-  resourceType: 'Observation'
-  id: string
-  status: string
-  code: {
-    text: string
-  }
-  effectiveDateTime: string
-  valueQuantity?: {
-    value: number
-    unit: string
-  }
-  component?: Array<{
-    code: {
-      text: string
-    }
-    valueQuantity: {
-      value: number
-      unit: string
-    }
-  }>
-}
+} from 'recharts';
 
 interface CarePlanProps {
-  carePlan: {
-    includedResources: {
-      goals: FHIRGoal[]
-      observations: FHIRObservation[]
-    }
-  }
+  carePlan: any; // FHIR Bundle
 }
 
 export default function CarePlanCharts({ carePlan }: CarePlanProps) {
-  const { goals, observations } = carePlan.includedResources
+  // Extract observations from the bundle
+  const observations = carePlan.entry
+    .filter((entry: any) => entry.resource.resourceType === 'Observation')
+    .map((entry: any) => entry.resource)
+    .sort((a: any, b: any) => 
+      new Date(a.effectiveDateTime).getTime() - new Date(b.effectiveDateTime).getTime()
+    );
 
-  // Process observations to handle both single values and component-based observations (like blood pressure)
-  const processedObservations = observations.flatMap(obs => {
-    if (obs.valueQuantity) {
-      // Single value observation (like blood sugar)
-      return [{
-        type: obs.code.text,
-        value: obs.valueQuantity.value,
-        unit: obs.valueQuantity.unit,
-        date: new Date(obs.effectiveDateTime).toLocaleDateString()
-      }]
-    } else if (obs.component) {
-      // Component-based observation (like blood pressure)
-      return obs.component.map(comp => ({
-        type: comp.code.text,
-        value: comp.valueQuantity.value,
-        unit: comp.valueQuantity.unit,
-        date: new Date(obs.effectiveDateTime).toLocaleDateString()
-      }))
-    }
-    return []
-  })
+  // Process blood sugar observations
+  const bloodSugarData = observations
+    .filter((obs: any) => 
+      obs.code.coding[0].code === '15074-8' && 
+      obs.valueQuantity?.value !== undefined
+    )
+    .map((obs: any) => ({
+      date: new Date(obs.effectiveDateTime).toLocaleDateString(),
+      value: obs.valueQuantity.value,
+    }));
 
-  // Group observations by type
-  const observationsByType = processedObservations.reduce((acc, obs) => {
-    if (!acc[obs.type]) {
-      acc[obs.type] = []
-    }
-    acc[obs.type].push({
-      value: obs.value,
-      date: obs.date,
-      unit: obs.unit
-    })
-    return acc
-  }, {} as Record<string, { value: number; date: string; unit: string }[]>)
+  // Process blood pressure observations
+  const bloodPressureData = observations
+    .filter((obs: any) => obs.code.coding[0].code === '85354-9')
+    .map((obs: any) => {
+      const systolic = obs.component.find((c: any) => c.code.coding[0].code === '8480-6');
+      const diastolic = obs.component.find((c: any) => c.code.coding[0].code === '8462-4');
+      return {
+        date: new Date(obs.effectiveDateTime).toLocaleDateString(),
+        systolic: systolic?.valueQuantity.value,
+        diastolic: diastolic?.valueQuantity.value,
+      };
+    });
 
-  // Process goals to match observation types
-  const goalsByType = goals.reduce((acc, goal) => {
-    if (goal.target?.[0]) {
-      acc[goal.target[0].measure.text] = goal.target[0].detailQuantity.value
-    }
-    return acc
-  }, {} as Record<string, number>)
+  // Process steps data
+  const stepsData = observations
+    .filter((obs: any) => 
+      obs.code.coding[0].code === '55423-8' && 
+      obs.code.text === 'Steps'
+    )
+    .map((obs: any) => ({
+      date: new Date(obs.effectiveDateTime).toLocaleDateString(),
+      value: obs.valueQuantity.value,
+    }));
 
-  // Sort observations by date for each type
-  Object.values(observationsByType).forEach(observations => {
-    observations.sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime())
-  })
+  // Process active hours data
+  const activeHoursData = observations
+    .filter((obs: any) => 
+      obs.code.coding[0].code === '55423-8' && 
+      obs.code.text === 'Active Hours'
+    )
+    .map((obs: any) => ({
+      date: new Date(obs.effectiveDateTime).toLocaleDateString(),
+      value: obs.valueQuantity.value,
+    }));
+
+  // Process sleep heart rate data
+  const sleepHeartRateData = observations
+    .filter((obs: any) => obs.code.coding[0].code === '9279-1')
+    .map((obs: any) => ({
+      date: new Date(obs.effectiveDateTime).toLocaleDateString(),
+      value: obs.valueQuantity.value,
+    }));
 
   return (
-    <div className="space-y-8">
-      {Object.entries(observationsByType).map(([type, observations]) => (
-        <div key={type} className="bg-white rounded-lg shadow p-6">
-          <h2 className="text-xl font-semibold mb-4">{type} Over Time</h2>
-          <div className="h-[300px]">
-            <ResponsiveContainer width="100%" height="100%">
-              <LineChart data={observations}>
-                <CartesianGrid strokeDasharray="3 3" />
-                <XAxis dataKey="date" />
-                <YAxis 
-                  label={{ 
-                    value: observations[0]?.unit || '', 
-                    angle: -90, 
-                    position: 'insideLeft' 
-                  }} 
-                />
-                <Tooltip />
-                <Legend />
-                <Line
-                  type="monotone"
-                  dataKey="value"
-                  stroke="#8884d8"
-                  name={type}
-                />
-                {goalsByType[type] && (
-                  <ReferenceLine
-                    y={goalsByType[type]}
-                    label={`Goal: ${goalsByType[type]}`}
-                    stroke="red"
-                    strokeDasharray="3 3"
-                  />
-                )}
-              </LineChart>
-            </ResponsiveContainer>
-          </div>
-          {goalsByType[type] && (
-            <div className="mt-4 text-sm text-gray-600">
-              Target Goal: {goalsByType[type]} {observations[0]?.unit}
-            </div>
-          )}
+    <div className="grid gap-6">
+      <Card className="p-6">
+        <h3 className="text-lg font-semibold mb-4">Blood Sugar Levels</h3>
+        <div className="h-[300px]">
+          <ResponsiveContainer width="100%" height="100%">
+            <LineChart data={bloodSugarData}>
+              <CartesianGrid strokeDasharray="3 3" />
+              <XAxis dataKey="date" />
+              <YAxis />
+              <Tooltip />
+              <Legend />
+              <Line
+                type="monotone"
+                dataKey="value"
+                name="Blood Sugar (mg/dL)"
+                stroke="#8884d8"
+                activeDot={{ r: 8 }}
+              />
+            </LineChart>
+          </ResponsiveContainer>
         </div>
-      ))}
+      </Card>
+
+      <Card className="p-6">
+        <h3 className="text-lg font-semibold mb-4">Blood Pressure</h3>
+        <div className="h-[300px]">
+          <ResponsiveContainer width="100%" height="100%">
+            <LineChart data={bloodPressureData}>
+              <CartesianGrid strokeDasharray="3 3" />
+              <XAxis dataKey="date" />
+              <YAxis />
+              <Tooltip />
+              <Legend />
+              <Line
+                type="monotone"
+                dataKey="systolic"
+                name="Systolic (mmHg)"
+                stroke="#8884d8"
+                activeDot={{ r: 8 }}
+              />
+              <Line
+                type="monotone"
+                dataKey="diastolic"
+                name="Diastolic (mmHg)"
+                stroke="#82ca9d"
+                activeDot={{ r: 8 }}
+              />
+            </LineChart>
+          </ResponsiveContainer>
+        </div>
+      </Card>
+
+      <Card className="p-6">
+        <h3 className="text-lg font-semibold mb-4">Daily Steps</h3>
+        <div className="h-[300px]">
+          <ResponsiveContainer width="100%" height="100%">
+            <LineChart data={stepsData}>
+              <CartesianGrid strokeDasharray="3 3" />
+              <XAxis dataKey="date" />
+              <YAxis />
+              <Tooltip />
+              <Legend />
+              <Line
+                type="monotone"
+                dataKey="value"
+                name="Steps"
+                stroke="#8884d8"
+                activeDot={{ r: 8 }}
+              />
+            </LineChart>
+          </ResponsiveContainer>
+        </div>
+      </Card>
+
+      <Card className="p-6">
+        <h3 className="text-lg font-semibold mb-4">Active Hours</h3>
+        <div className="h-[300px]">
+          <ResponsiveContainer width="100%" height="100%">
+            <LineChart data={activeHoursData}>
+              <CartesianGrid strokeDasharray="3 3" />
+              <XAxis dataKey="date" />
+              <YAxis />
+              <Tooltip />
+              <Legend />
+              <Line
+                type="monotone"
+                dataKey="value"
+                name="Hours"
+                stroke="#8884d8"
+                activeDot={{ r: 8 }}
+              />
+            </LineChart>
+          </ResponsiveContainer>
+        </div>
+      </Card>
+
+      <Card className="p-6">
+        <h3 className="text-lg font-semibold mb-4">Sleep Heart Rate</h3>
+        <div className="h-[300px]">
+          <ResponsiveContainer width="100%" height="100%">
+            <LineChart data={sleepHeartRateData}>
+              <CartesianGrid strokeDasharray="3 3" />
+              <XAxis dataKey="date" />
+              <YAxis />
+              <Tooltip />
+              <Legend />
+              <Line
+                type="monotone"
+                dataKey="value"
+                name="BPM"
+                stroke="#8884d8"
+                activeDot={{ r: 8 }}
+              />
+            </LineChart>
+          </ResponsiveContainer>
+        </div>
+      </Card>
     </div>
-  )
+  );
 } 
